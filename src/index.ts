@@ -1,160 +1,110 @@
-/**
- * BlueMap Cloudflare Worker
- *
- * Serves BlueMap web-app and map data from a Cloudflare R2 bucket,
- * implementing the same logic that NGINX/Apache configs do for the
- * file-based external webserver setup described at:
- * https://bluemap.bluecolored.de/wiki/webserver/ExternalWebserversFile.html
- *
- * Key behaviours:
- *  1. If the requested file doesn't exist but a `.gz` variant does,
- *     serve the `.gz` file with `Content-Encoding: gzip`.
- *  2. Certain files (`.prbm`, `textures.json`) are *always* stored as
- *     `.gz` in R2, so the worker transparently rewrites those requests.
- *  3. Missing map tiles return 204 (No Content) instead of 404 to
- *     prevent noisy errors in the browser console.
- *  4. (Optional) Requests to `/maps/*/live/*` can be proxied to the
- *     BlueMap integrated webserver for live player markers.
- */
+// BlueMap Cloudflare Worker
+//
+// Static files (index.html, assets/, lang/, settings.json)
+// are served automatically by Cloudflare Worker static assets from public/.
+//
+// This worker handles ALL requests under /maps/* from R2.
+// R2 keys do NOT have the "maps/" prefix, so we strip it.
+//
+// For .prbm tiles (LOD 0): stored as .prbm.gz in R2, decompressed before serving
+// For .png tiles (LOD 1+): stored as .png in R2, served directly
+// For settings.json: may be stored as settings.json.gz in R2, decompressed before serving
+// For textures.json: stored as textures.json.gz in R2, decompressed before serving
+// Missing tiles return 204 (No Content) instead of 404
 
 export interface Env {
   BUCKET: R2Bucket;
-  /** Optional origin URL of the BlueMap built-in webserver for live data */
-  LIVE_SERVER_ORIGIN?: string;
+  ASSETS: Fetcher;
 }
-
-// ---------------------------------------------------------------------------
-// MIME types
-// ---------------------------------------------------------------------------
-
-const MIME_TYPES: Record<string, string> = {
-  html: "text/html; charset=utf-8",
-  htm: "text/html; charset=utf-8",
-  css: "text/css; charset=utf-8",
-  js: "text/javascript; charset=utf-8",
-  json: "application/json; charset=utf-8",
-  txt: "text/plain; charset=utf-8",
-  xml: "text/xml; charset=utf-8",
-  csv: "text/csv; charset=utf-8",
-  svg: "image/svg+xml",
-
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  ico: "image/x-icon",
-  tif: "image/tiff",
-  tiff: "image/tiff",
-
-  ttf: "font/ttf",
-  woff: "font/woff",
-  woff2: "font/woff2",
-
-  mp3: "audio/mpeg",
-  wav: "audio/wav",
-  oga: "audio/ogg",
-  weba: "audio/webm",
-
-  mp4: "video/mp4",
-  mpeg: "video/mpeg",
-  webm: "video/webm",
-
-  prbm: "application/octet-stream",
-};
 
 function getMimeType(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return MIME_TYPES[ext] ?? "application/octet-stream";
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Files that BlueMap always stores with a .gz extension */
-const GZ_ONLY_EXTENSIONS = [".prbm"];
-const GZ_ONLY_FILENAMES = ["textures.json"];
-
-/** Returns true when the request path is inside a map tiles directory */
-function isTilePath(path: string): boolean {
-  // e.g. maps/world/tiles/0/x9/z-8.prbm
-  return /^maps\/[^/]+\/tiles\//.test(path);
-}
-
-/** Returns true when the path targets the live-data endpoint */
-function isLivePath(path: string): boolean {
-  return /^maps\/[^/]+\/live\//.test(path);
-}
-
-/**
- * Should we automatically try appending `.gz` for this path?
- * We do this for files that BlueMap only stores compressed.
- */
-function shouldTryGz(path: string): boolean {
-  // Already requesting a .gz — no need to rewrite
-  if (path.endsWith(".gz")) return false;
-
-  for (const ext of GZ_ONLY_EXTENSIONS) {
-    if (path.endsWith(ext)) return true;
+  if (path.endsWith(".prbm") || path.endsWith(".prbm.gz")) {
+    return "application/octet-stream";
   }
-  for (const name of GZ_ONLY_FILENAMES) {
-    if (path.endsWith(name)) return true;
+  if (path.endsWith(".png")) {
+    return "image/png";
   }
-  return false;
+  if (path.endsWith(".json") || path.endsWith(".json.gz")) {
+    return "application/json";
+  }
+  return "application/octet-stream";
 }
 
-/** Build a Response from an R2Object */
 function r2Response(
   object: R2ObjectBody,
   contentType: string,
-  gzipped: boolean,
-  cacheSeconds: number = 86400,
-  request?: Request
+  request: Request,
 ): Response {
   const headers = new Headers();
   headers.set("Content-Type", contentType);
   headers.set("ETag", object.httpEtag);
-  headers.set("Cache-Control", `public, max-age=${cacheSeconds}`);
+  headers.set("Cache-Control", "public, max-age=86400");
   headers.set("Access-Control-Allow-Origin", "*");
 
-  if (gzipped) {
-    headers.set("Content-Encoding", "gzip");
-  }
-
-  // Honour conditional requests (If-None-Match)
-  if (request) {
-    const ifNoneMatch = request.headers.get("If-None-Match");
-    if (ifNoneMatch && ifNoneMatch === object.httpEtag) {
-      return new Response(null, { status: 304, headers });
-    }
+  const ifNoneMatch = request.headers.get("If-None-Match");
+  if (ifNoneMatch && ifNoneMatch === object.httpEtag) {
+    return new Response(null, { status: 304, headers });
   }
 
   return new Response(object.body, { headers });
 }
 
-// ---------------------------------------------------------------------------
-// Worker entry
-// ---------------------------------------------------------------------------
+function decompressedR2Response(
+  object: R2ObjectBody,
+  contentType: string,
+  request: Request,
+): Response {
+  const headers = new Headers();
+  headers.set("Content-Type", contentType);
+  headers.set("ETag", object.httpEtag);
+  headers.set("Cache-Control", "public, max-age=86400");
+  headers.set("Access-Control-Allow-Origin", "*");
+
+  const ifNoneMatch = request.headers.get("If-None-Match");
+  if (ifNoneMatch && ifNoneMatch === object.httpEtag) {
+    return new Response(null, { status: 304, headers });
+  }
+
+  // Decompress gzip content in the worker so we don't rely on
+  // Content-Encoding negotiation (which can break in local dev / edge cases).
+  const decompressed = object.body.pipeThrough(new DecompressionStream("gzip"));
+  return new Response(decompressed, { headers });
+}
+
+function emptyResponse(status: number): Response {
+  return new Response(null, {
+    status,
+    headers: { "Access-Control-Allow-Origin": "*" },
+  });
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    let path = decodeURIComponent(url.pathname);
 
-    // Strip leading slash so the R2 key matches the object tree
-    if (path.startsWith("/")) {
-      path = path.substring(1);
+    // Debug endpoint: list R2 objects to diagnose key structure
+    // Usage: /debug?prefix=world/&max=20
+    if (url.pathname === "/debug") {
+      const prefix = url.searchParams.get("prefix") ?? undefined;
+      const max = parseInt(url.searchParams.get("max") ?? "50");
+      const listed = await env.BUCKET.list({ prefix, limit: max });
+      const keys = listed.objects.map((o) => ({
+        key: o.key,
+        size: o.size,
+      }));
+      return new Response(
+        JSON.stringify(
+          { truncated: listed.truncated, count: keys.length, objects: keys },
+          null,
+          2,
+        ),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      );
     }
 
-    // Root → serve index.html
-    if (path === "" || path === "/") {
-      path = "index.html";
-    }
-
-    // -----------------------------------------------------------------------
     // CORS preflight
-    // -----------------------------------------------------------------------
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -166,91 +116,64 @@ export default {
       });
     }
 
-    // Only allow GET / HEAD
     if (request.method !== "GET" && request.method !== "HEAD") {
       return new Response("Method Not Allowed", { status: 405 });
     }
 
-    // -----------------------------------------------------------------------
-    // Optional: proxy live-data requests to the Minecraft server
-    // -----------------------------------------------------------------------
-    if (isLivePath(path) && env.LIVE_SERVER_ORIGIN) {
-      const target = `${env.LIVE_SERVER_ORIGIN.replace(/\/+$/, "")}/${path}`;
-      const proxyReq = new Request(target, {
-        method: request.method,
-        headers: request.headers,
-      });
-      try {
-        const proxyRes = await fetch(proxyReq);
-        const response = new Response(proxyRes.body, proxyRes);
-        response.headers.set("Access-Control-Allow-Origin", "*");
-        return response;
-      } catch {
-        // If the live server is unreachable, return 502
-        return new Response("Live server unavailable", { status: 502 });
-      }
+    let path = decodeURIComponent(url.pathname);
+
+    // Strip leading slash
+    if (path.startsWith("/")) {
+      path = path.substring(1);
     }
 
-    // -----------------------------------------------------------------------
-    // Serve from R2
-    // -----------------------------------------------------------------------
-    const contentType = getMimeType(path);
-    const isMapTile = isTilePath(path);
-
-    // Strategy 1: the file is known to be stored only as .gz in R2
-    if (shouldTryGz(path)) {
-      const gzKey = path + ".gz";
-      const object = await env.BUCKET.get(gzKey);
-      if (object) {
-        return r2Response(object, contentType, true, 86400, request);
-      }
-
-      // If the .gz isn't found either, maybe the uncompressed version exists
-      const fallback = await env.BUCKET.get(path);
-      if (fallback) {
-        return r2Response(fallback, contentType, false, 86400, request);
-      }
-
-      // Tile not found → 204
-      if (isMapTile) {
-        return new Response(null, {
-          status: 204,
-          headers: { "Access-Control-Allow-Origin": "*" },
-        });
-      }
-
-      return new Response("Not Found", {
-        status: 404,
-        headers: { "Access-Control-Allow-Origin": "*" },
-      });
+    // Only handle maps/* paths — anything else should have been
+    // caught by static assets already, so return 404
+    if (!path.startsWith("maps/")) {
+      return emptyResponse(404);
     }
 
-    // Strategy 2: try the exact key first, then fall back to .gz
-    const object = await env.BUCKET.get(path);
-    if (object) {
-      return r2Response(object, contentType, false, 86400, request);
-    }
+    // Strip "maps/" prefix since R2 keys don't include it.
+    // e.g. URL path "maps/world/tiles/0/x0/z0.prbm" -> R2 key "world/tiles/0/x0/z0.prbm"
+    const r2Key = path.substring("maps/".length);
 
-    // Maybe it exists only as .gz (catch-all for any other compressed files)
-    if (!path.endsWith(".gz")) {
-      const gzObject = await env.BUCKET.get(path + ".gz");
+    const contentType = getMimeType(r2Key);
+    const isTile = /^[^/]+\/tiles\//.test(r2Key);
+
+    // .prbm files and map config (settings.json, textures.json) are
+    // typically stored as .gz in R2. Try the compressed version first
+    // and decompress in the worker before serving.
+    if (
+      r2Key.endsWith(".prbm") ||
+      r2Key.endsWith("textures.json") ||
+      r2Key.endsWith("settings.json")
+    ) {
+      const gzObject = await env.BUCKET.get(r2Key + ".gz");
       if (gzObject) {
-        return r2Response(gzObject, contentType, true, 86400, request);
+        return decompressedR2Response(gzObject, contentType, request);
+      }
+      // Not found as .gz — fall through to try the plain key below
+    }
+
+    // Try exact key from R2
+    const object = await env.BUCKET.get(r2Key);
+    if (object) {
+      return r2Response(object, contentType, request);
+    }
+
+    // Maybe it only exists as .gz (catch-all for other compressed files)
+    if (!r2Key.endsWith(".gz")) {
+      const gzObject = await env.BUCKET.get(r2Key + ".gz");
+      if (gzObject) {
+        return decompressedR2Response(gzObject, contentType, request);
       }
     }
 
-    // Map tile not found → 204 (No Content)
-    if (isMapTile) {
-      return new Response(null, {
-        status: 204,
-        headers: { "Access-Control-Allow-Origin": "*" },
-      });
+    // Missing tile -> 204
+    if (isTile) {
+      return emptyResponse(204);
     }
 
-    // Everything else → 404
-    return new Response("Not Found", {
-      status: 404,
-      headers: { "Access-Control-Allow-Origin": "*" },
-    });
+    return emptyResponse(404);
   },
 };

@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Wrangler
+.wrangler/
+
+# Lockfiles
+bun.lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Map data (served from R2, not committed)
+maps/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Environment / secrets
+.env
+.env.*
+.dev.vars
+
+# Build output
+dist/
+nul

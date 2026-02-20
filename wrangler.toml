@@ -2,11 +2,24 @@ name = "bluemap-worker"
 main = "src/index.ts"
 compatibility_date = "2024-12-30"
 
-# R2 bucket binding — the worker accesses your BlueMap files through this binding.
-# Make sure the bucket name matches the R2 bucket you created in your Cloudflare dashboard.
+# Optional: smart placement for better performance and reliability across the globe. This will route requests to the nearest Cloudflare data center.
+[placement]
+mode = "smart"
+
+# Static web app files (index.html, assets/, lang/, settings.json)
+# are served directly from the edge — no R2 reads needed.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+# Requests not matched by static assets fall through to the worker,
+# which serves map data from R2.
+not_found_handling = "none"
+
+# R2 bucket binding — only used for map data (maps/**)
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "bluemap"
+remote = true # Force remote for local development since the R2 bucket is simulated by default and not using the remote data.
 
 # Optional: if you want live player markers, set the origin of your
 # BlueMap integrated webserver (the Minecraft server plugin's built-in web server).
