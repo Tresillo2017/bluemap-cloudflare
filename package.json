@@ -1,0 +1,15 @@
+{
+  "name": "bluemap-cloudflare-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker to serve BlueMap tiles from R2 storage",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "upload": "node scripts/upload-to-r2.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "wrangler": "^3.99.0"
+  }
+}

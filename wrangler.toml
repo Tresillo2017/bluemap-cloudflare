@@ -1,0 +1,19 @@
+name = "bluemap-worker"
+main = "src/index.ts"
+compatibility_date = "2024-12-30"
+
+# R2 bucket binding — the worker accesses your BlueMap files through this binding.
+# Make sure the bucket name matches the R2 bucket you created in your Cloudflare dashboard.
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "bluemap"
+
+# Optional: if you want live player markers, set the origin of your
+# BlueMap integrated webserver (the Minecraft server plugin's built-in web server).
+# Uncomment and set the URL below, then the worker will proxy /maps/*/live/* requests there.
+# [vars]
+# LIVE_SERVER_ORIGIN = "http://your-minecraft-server:8100"
+
+# Optional: custom domain / route configuration
+# [env.production]
+# routes = [{ pattern = "map.example.com/*", zone_name = "example.com" }]
