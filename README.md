@@ -203,6 +203,13 @@ This returns a JSON list of R2 object keys and sizes, useful for verifying the b
 - Set `LIVE_SERVER_ORIGIN` in `wrangler.toml`.
 - Ensure the Minecraft server's BlueMap webserver port is reachable from Cloudflare's network.
 
+## Tested With
+
+| Component | Version |
+|---|---|
+| Datapack | JJThunder 0.6.0 |
+| Mod Loader | Neoforge 1.21.1 |
+
 ## License
 
 This worker configuration is provided as-is for use with [BlueMap](https://github.com/BlueMap-Minecraft/BlueMap). BlueMap itself is licensed under the MIT License.
