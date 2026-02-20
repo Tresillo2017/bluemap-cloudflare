@@ -10,7 +10,7 @@ The [BlueMapS3Storage](https://github.com/TheMeinerLP/BlueMapS3Storage) plugin c
 
 This Cloudflare Worker then serves that data to the BlueMap web viewer by:
 
-1. **Decompressing `.gz` files on the fly** — when the browser asks for `something.prbm` or `textures.json`, the worker fetches the `.gz` version from R2, decompresses it, and serves the result.
+1. **Serving `.gz` files with `Content-Encoding: gzip`** — when the browser asks for `something.prbm` or `textures.json`, the worker fetches the `.gz` version from R2 and serves the compressed body as-is, letting the browser decompress it natively.
 2. **Returning 204 for missing tiles** — instead of 404, which would flood the browser console with errors.
 3. **Serving static assets normally** — `index.html`, JS/CSS bundles, language files, and global `settings.json` are served from Cloudflare's static asset hosting.
 
@@ -144,7 +144,7 @@ world_the_end/
 Request: GET /maps/world/tiles/0/x0/z0.prbm
   1. Matches .prbm → try compressed version first
   2. Fetch R2 key: world/tiles/0/x0/z0.prbm.gz → FOUND
-  3. Decompress gzip and respond with plain body
+  3. Serve compressed body with Content-Encoding: gzip
   ✅ 200 OK
 
 Request: GET /maps/world/tiles/0/x99/z99.prbm
@@ -157,7 +157,7 @@ Request: GET /maps/world/tiles/0/x99/z99.prbm
 Request: GET /maps/world/textures.json
   1. Matches textures.json → try compressed version first
   2. Fetch R2 key: world/textures.json.gz → FOUND
-  3. Decompress gzip and respond with plain body
+  3. Serve compressed body with Content-Encoding: gzip
   ✅ 200 OK
 
 Request: GET /assets/index-b72fc5a8.js
@@ -194,7 +194,7 @@ This returns a JSON list of R2 object keys and sizes, useful for verifying the b
 
 ### `textures.json` or `settings.json` fails to load
 - Check the `/debug` endpoint to confirm the file exists in R2 (e.g. `world/textures.json.gz`).
-- These files are typically stored compressed (`.gz`) by BlueMapS3Storage. The worker automatically tries the `.gz` version first, then falls back to the plain key.
+- These files are typically stored compressed (`.gz`) by BlueMapS3Storage. The worker automatically tries the `.gz` version first and serves it with `Content-Encoding: gzip`, then falls back to the plain key.
 
 ### CORS errors
 - The worker sets `Access-Control-Allow-Origin: *` on all responses. If you still see CORS errors, make sure you're not hitting a different origin by mistake.

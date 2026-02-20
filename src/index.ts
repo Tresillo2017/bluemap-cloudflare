@@ -6,10 +6,10 @@
 // This worker handles ALL requests under /maps/* from R2.
 // R2 keys do NOT have the "maps/" prefix, so we strip it.
 //
-// For .prbm tiles (LOD 0): stored as .prbm.gz in R2, decompressed before serving
+// For .prbm tiles (LOD 0): stored as .prbm.gz in R2, served compressed with Content-Encoding: gzip
 // For .png tiles (LOD 1+): stored as .png in R2, served directly
-// For settings.json: may be stored as settings.json.gz in R2, decompressed before serving
-// For textures.json: stored as textures.json.gz in R2, decompressed before serving
+// For settings.json: may be stored as settings.json.gz in R2, served compressed with Content-Encoding: gzip
+// For textures.json: stored as textures.json.gz in R2, served compressed with Content-Encoding: gzip
 // Missing tiles return 204 (No Content) instead of 404
 
 export interface Env {
@@ -49,13 +49,14 @@ function r2Response(
   return new Response(object.body, { headers });
 }
 
-function decompressedR2Response(
+function compressedR2Response(
   object: R2ObjectBody,
   contentType: string,
   request: Request,
 ): Response {
   const headers = new Headers();
   headers.set("Content-Type", contentType);
+  headers.set("Content-Encoding", "gzip");
   headers.set("ETag", object.httpEtag);
   headers.set("Cache-Control", "public, max-age=86400");
   headers.set("Access-Control-Allow-Origin", "*");
@@ -65,10 +66,8 @@ function decompressedR2Response(
     return new Response(null, { status: 304, headers });
   }
 
-  // Decompress gzip content in the worker so we don't rely on
-  // Content-Encoding negotiation (which can break in local dev / edge cases).
-  const decompressed = object.body.pipeThrough(new DecompressionStream("gzip"));
-  return new Response(decompressed, { headers });
+  // @ts-expect-error: encodeBody is a Cloudflare Workers specific option
+  return new Response(object.body, { headers, encodeBody: "manual" });
 }
 
 function emptyResponse(status: number): Response {
@@ -142,7 +141,7 @@ export default {
 
     // .prbm files and map config (settings.json, textures.json) are
     // typically stored as .gz in R2. Try the compressed version first
-    // and decompress in the worker before serving.
+    // and serve it as-is with Content-Encoding: gzip.
     if (
       r2Key.endsWith(".prbm") ||
       r2Key.endsWith("textures.json") ||
@@ -150,7 +149,7 @@ export default {
     ) {
       const gzObject = await env.BUCKET.get(r2Key + ".gz");
       if (gzObject) {
-        return decompressedR2Response(gzObject, contentType, request);
+        return compressedR2Response(gzObject, contentType, request);
       }
       // Not found as .gz — fall through to try the plain key below
     }
@@ -165,7 +164,7 @@ export default {
     if (!r2Key.endsWith(".gz")) {
       const gzObject = await env.BUCKET.get(r2Key + ".gz");
       if (gzObject) {
-        return decompressedR2Response(gzObject, contentType, request);
+        return compressedR2Response(gzObject, contentType, request);
       }
     }
 
