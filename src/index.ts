@@ -15,6 +15,7 @@
 export interface Env {
   BUCKET: R2Bucket;
   ASSETS: Fetcher;
+  LIVE_SERVER_ORIGIN?: string;
 }
 
 function getMimeType(path: string): string {
@@ -78,8 +79,68 @@ function emptyResponse(status: number): Response {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const url = new URL(request.url);
+
+    // Debug endpoint: test live server proxy connection
+    // Usage: /debug/live
+    if (url.pathname === "/debug/live") {
+      if (!env.LIVE_SERVER_ORIGIN) {
+        return new Response(
+          JSON.stringify({ error: "LIVE_SERVER_ORIGIN is not set" }, null, 2),
+          { status: 500, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      const origin = env.LIVE_SERVER_ORIGIN.replace(/\/+$/, "");
+      const testUrl = `${origin}/maps/world/live/players.json`;
+      try {
+        const start = Date.now();
+        const res = await fetch(testUrl, {
+          method: "GET",
+          headers: {
+            Accept: "*/*",
+            "User-Agent": "bluemap-cloudflare-worker",
+          },
+        });
+        const elapsed = Date.now() - start;
+        const body = await res.text();
+        const resHeaders: Record<string, string> = {};
+        res.headers.forEach((v, k) => {
+          resHeaders[k] = v;
+        });
+        return new Response(
+          JSON.stringify(
+            {
+              testUrl,
+              status: res.status,
+              statusText: res.statusText,
+              elapsedMs: elapsed,
+              responseHeaders: resHeaders,
+              bodyPreview: body.substring(0, 2000),
+            },
+            null,
+            2,
+          ),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      } catch (err: unknown) {
+        return new Response(
+          JSON.stringify(
+            {
+              testUrl,
+              error: err instanceof Error ? err.message : String(err),
+            },
+            null,
+            2,
+          ),
+          { status: 502, headers: { "Content-Type": "application/json" } },
+        );
+      }
+    }
 
     // Debug endpoint: list R2 objects to diagnose key structure
     // Usage: /debug?prefix=world/&max=20
@@ -130,6 +191,31 @@ export default {
     // caught by static assets already, so return 404
     if (!path.startsWith("maps/")) {
       return emptyResponse(404);
+    }
+
+    // Live player markers: proxy /maps/*/live/* to the integrated webserver
+    if (env.LIVE_SERVER_ORIGIN && /^maps\/[^/]+\/live\//.test(path)) {
+      const origin = env.LIVE_SERVER_ORIGIN.replace(/\/+$/, "");
+      const proxyUrl = `${origin}/${path}`;
+      try {
+        const proxyResponse = await fetch(proxyUrl, {
+          method: request.method,
+          headers: {
+            Accept: request.headers.get("Accept") ?? "*/*",
+            "User-Agent": "bluemap-cloudflare-worker",
+          },
+        });
+        const responseHeaders = new Headers(proxyResponse.headers);
+        responseHeaders.set("Access-Control-Allow-Origin", "*");
+        // Don't cache live data for long — players move around
+        responseHeaders.set("Cache-Control", "public, max-age=5");
+        return new Response(proxyResponse.body, {
+          status: proxyResponse.status,
+          headers: responseHeaders,
+        });
+      } catch {
+        return emptyResponse(502);
+      }
     }
 
     // Strip "maps/" prefix since R2 keys don't include it.

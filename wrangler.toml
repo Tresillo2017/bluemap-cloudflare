@@ -24,9 +24,14 @@ remote = true # Force remote for local development since the R2 bucket is simula
 # Optional: if you want live player markers, set the origin of your
 # BlueMap integrated webserver (the Minecraft server plugin's built-in web server).
 # Uncomment and set the URL below, then the worker will proxy /maps/*/live/* requests there.
-# [vars]
-# LIVE_SERVER_ORIGIN = "http://your-minecraft-server:8100"
+[vars]
+LIVE_SERVER_ORIGIN = ""
 
 # Optional: custom domain / route configuration
 # [env.production]
 # routes = [{ pattern = "map.example.com/*", zone_name = "example.com" }]
+
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
